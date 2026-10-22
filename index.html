@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portal Proctoring — Local Test Client</title>
+<!--
+  LOCAL test page for identity proctoring (face + voice match).
+  Pre-wired for a machine running the engine, LiveKit and the sample server
+  locally. Nothing here points at a remote deployment.
+
+  Expected services:
+      engine        http://127.0.0.1:8000      uvicorn app.main:app
+      livekit       ws://127.0.0.1:7880        docker livekit/livekit-server --dev
+      this page     http://localhost:5500      python -m http.server 5500 --directory scripts
+      samples       http://127.0.0.1:5501      python -m http.server 5501 --directory <samples>
+
+  The API key below is a LOCAL dev key with no access to anything else.
+  Do not copy this file to a server: it holds a key in the browser and it
+  drives an engine that has its SSRF guards relaxed for 127.0.0.1 fetches.
+-->
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2433; --muted:#667085; --line:#e4e7ec; --accent:#2e6be6; --ok:#16794c; --warn:#b54708; --bad:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:14px 20px; background:var(--card); border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0 12px 0 0; }
+  .pill { padding:3px 10px; border-radius:999px; background:#eef2f6; font-size:12px; font-weight:600; }
+  .pill.ok { background:#e7f6ee; color:var(--ok); } .pill.bad { background:#fdecea; color:var(--bad); }
+  main { display:grid; grid-template-columns: 380px 1fr 400px; gap:16px; padding:16px; }
+  @media (max-width: 1200px) { main { grid-template-columns: 1fr; } }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 10px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 4px; }
+  input, textarea, select { width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:6px; font:inherit; }
+  textarea { font-family: ui-monospace, Consolas, monospace; font-size:12px; min-height:200px; }
+  button { padding:7px 12px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; font:inherit; margin:6px 6px 0 0; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  video { width:100%; border-radius:8px; background:#111; aspect-ratio: 16/9; object-fit: cover; }
+  .agent { display:flex; align-items:center; gap:12px; padding:12px; border:1px solid var(--line); border-radius:8px; margin-bottom:12px; }
+  .dot { width:14px; height:14px; border-radius:50%; background:#c7ccd4; }
+  .dot.speaking { background:var(--accent); box-shadow:0 0 0 6px rgba(46,107,230,.18); }
+  .dot.listening { background:var(--ok); } .dot.thinking { background:var(--warn); }
+  .dot.paused, .dot.connecting { background:var(--bad); }
+  #transcript { height: 240px; overflow:auto; }
+  .turn { margin:0 0 10px; }
+  .turn .who { font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; }
+  .turn.ai .who { color:var(--accent); }
+  .turn.partial { opacity:.6; font-style:italic; } .turn.filler { opacity:.5; }
+  .turn.partial.live { opacity:1; font-style:normal; }
+  .turn .fresh { animation: captionIn .35s ease-out; }
+  .turn .cursor { color:var(--accent); margin-left:2px; animation: captionBlink 1s steps(1) infinite; }
+  @keyframes captionIn { from { opacity:0; } to { opacity:1; } }
+  @keyframes captionBlink { 50% { opacity:0; } }
+  #log { height: 200px; overflow:auto; font:12px ui-monospace, Consolas, monospace; white-space:pre-wrap; background:#0f172a; color:#cbd5e1; padding:8px; border-radius:6px; }
+  .banner { display:none; padding:10px 12px; border-radius:8px; margin-bottom:10px; font-weight:600; }
+  .banner.show { display:block; }
+  .banner.warn { background:#fff4e5; color:var(--warn); }
+  .banner.bad { background:#fdecea; color:var(--bad); }
+  .banner.ok { background:#e7f6ee; color:var(--ok); }
+  .verdict { font-size:22px; font-weight:800; padding:10px 14px; border-radius:8px; text-align:center; margin-bottom:10px; }
+  .verdict.pass { background:#e7f6ee; color:var(--ok); }
+  .verdict.review { background:#fff4e5; color:var(--warn); }
+  .verdict.fail { background:#fdecea; color:var(--bad); }
+  table.kv { width:100%; border-collapse:collapse; font-size:12px; margin-bottom:10px; }
+  table.kv th { text-align:left; color:var(--muted); font-weight:600; padding:3px 6px 3px 0; width:42%; }
+  table.kv td { padding:3px 0; font-family:ui-monospace, Consolas, monospace; }
+  .modality { border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:10px; }
+  .modality h3 { margin:0 0 8px; font-size:13px; }
+  .tag { font-size:11px; font-weight:700; padding:2px 7px; border-radius:999px; }
+  .tag.verified { background:#e7f6ee; color:var(--ok); }
+  .tag.not_verified { background:#fdecea; color:var(--bad); }
+  .tag.inconclusive, .tag.skipped { background:#eef2f6; color:var(--muted); }
+  .tag.error { background:#fff4e5; color:var(--warn); }
+  .hint { font-size:11px; color:var(--muted); margin-top:6px; line-height:1.4; }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+  #preflight { font:12px ui-monospace, Consolas, monospace; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Portal Proctoring — Local Test</h1>
+  <span class="pill" id="conn">disconnected</span>
+  <span class="pill" id="status">no session</span>
+  <span class="pill" id="timer">0:00</span>
+  <span class="pill" id="sid">—</span>
+</header>
+<main>
+  <section>
+    <h2>0. Preflight</h2>
+    <div id="preflight">not checked</div>
+    <button id="check">Check services</button>
+
+    <h2 style="margin-top:16px">1. Session</h2>
+    <label>Engine base URL</label>
+    <input id="engine" value="https://hyerhub-lk-731.centralindia.cloudapp.azure.com/ai-interview">
+    <label>X-API-Key (local dev key)</label>
+    <input id="apikey" value="vk_49ba6a2eea1c4ba4.dVUvb6YqZAYdhLrNambyRMFoHuV6rxO4tVxp92DWCfk">
+
+    <label>Reference samples to enrol</label>
+    <select id="preset">
+      <option value="off">proctoring OFF (baseline)</option>
+      <option value="match">2.jpg + original audio  →  should MATCH you</option>
+      <option value="mismatch">1.jpg + livesample1  →  should MISMATCH (other person)</option>
+      <option value="faceonly">face only (2.jpg)</option>
+      <option value="voiceonly">voice only (original audio)</option>
+      
+    </select>
+    <div class="hint">Whoever sits in front of the camera is the "live" sample.
+      Pick <b>2.jpg</b> if you are the person in the plaid shirt; the pipeline
+      should verify you. Pick <b>1.jpg</b> to force a mismatch.</div>
+
+    <label>Create request (POST /api/interviews/portal/sessions)</label>
+    <textarea id="body"></textarea>
+    <button class="primary" id="create">Create session</button>
+    <label>Candidate join token</label>
+    <input id="token" placeholder="filled by Create">
+    <button class="primary" id="join">Join interview</button>
+    <button id="rejoin" disabled>Rejoin</button>
+  </section>
+
+  <section>
+    <div class="banner" id="banner"></div>
+    <div class="agent"><div class="dot" id="agentDot"></div><div><b id="agentName">AI Interviewer</b><div id="agentState" style="color:var(--muted)">not connected</div></div></div>
+    <video id="self" autoplay muted playsinline></video>
+    <div>
+      <button id="pause" disabled>Pause</button>
+      <button id="resume" disabled>Continue</button>
+      <button id="end" disabled>End interview</button>
+      <button id="leave" disabled>Leave (simulate drop)</button>
+      <button id="startAudio" style="display:none">Enable audio</button>
+    </div>
+    <h2 style="margin-top:14px">Event log</h2>
+    <div id="log"></div>
+    <h2 style="margin-top:14px">Live transcript</h2>
+    <div id="transcript"></div>
+  </section>
+
+  <section>
+    <h2>3. Proctoring report</h2>
+    <button class="primary" id="report">Fetch report</button>
+    <button id="autopoll">Auto-refresh: off</button>
+    <div id="reportOut" class="hint">End the interview first — scores are written when the agent shuts down.</div>
+  </section>
+</main>
+
+<script>
+const LK = window.LivekitClient;
+const $ = (id) => document.getElementById(id);
+const enc = new TextEncoder(), dec = new TextDecoder();
+let room = null, join = null, sessionId = null, heartbeat = null, timerTick = null, activeSecs = 0, ended = false, poll = null;
+const turns = new Map();
+
+// ?samples=… / ?engine=… override the defaults, e.g. for a local engine run.
+const PARAMS = new URLSearchParams(location.search);
+const SAMPLES = PARAMS.get("samples") || "https://thing-ashen-mystified.ngrok-free.dev";
+if (PARAMS.get("engine")) document.getElementById("engine").value = PARAMS.get("engine");
+
+function baseBody() {
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return {
+    tenant_id: "demo-tenant",
+    platform_interview_id: "proctor-" + suffix,
+    platform_jd_id: "jd-1",
+    platform_candidate_id: "cand-" + suffix,
+    interview_type: "technical", interview_level: "mid", duration_minutes: 10,
+    jd: { id: "jd-1", title: "Backend Engineer", client_name: "Demo", location: "Remote",
+          min_experience_years: 2, max_experience_years: 6, min_ctc_lpa: 10, max_ctc_lpa: 30,
+          must_have_skills: ["python", "sql"], responsibilities: "Build and operate backend APIs." },
+    candidate: { id: "cand-1", name: "Demo Candidate", phone: "+910000000000" },
+    interview_script: [
+      { id: "q1", kind: "question", question: "Tell me about an API you built recently." },
+      { id: "q2", kind: "question", question: "How do you debug a slow SQL query?" }
+    ],
+    resume_policy: { reconnect_grace_secs: 300, max_pauses: 3 },
+    recording_policy: { enabled: true, mode: "room_composite" }
+  };
+}
+
+// A 10s tick so a verdict commits in ~40s: the report needs 3 scored checks
+// before it will move off `inconclusive`. Local face checks cost nothing.
+function policyFor(preset) {
+  const identity = (face, voice) => {
+    const id = { check_interval_secs: 10 };
+    if (face)  { id.face_image_url  = `${SAMPLES}/${face}`;  id.face  = { provider: "local" }; }
+    if (voice) { id.voice_audio_url = `${SAMPLES}/${voice}`; id.voice = { provider: "ecapa", sample_secs: 4.0 }; }
+    return id;
+  };
+  switch (preset) {
+    case "match":     return { enabled: true, video_enabled: true, camera_required: true,
+                               identity: identity("2.jpg", "canidate_originalsample.m4a") };
+    case "mismatch":  return { enabled: true, video_enabled: true, camera_required: true,
+                               identity: identity("1.jpg", "livesample1.m4a") };
+    case "faceonly":  return { enabled: true, video_enabled: true, camera_required: true,
+                               identity: identity("2.jpg", null) };
+    case "voiceonly": return { enabled: true, video_enabled: false, camera_required: false,
+                               identity: identity(null, "canidate_originalsample.m4a") };
+    default:          return { enabled: false };
+  }
+}
+
+function refreshBody() {
+  const body = baseBody();
+  body.proctoring_policy = policyFor($("preset").value);
+  $("body").value = JSON.stringify(body, null, 2);
+}
+$("preset").onchange = refreshBody;
+refreshBody();
+
+function log(msg) { const el = $("log"); el.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`; el.scrollTop = el.scrollHeight; }
+function banner(text, kind) { const b = $("banner"); b.className = "banner" + (text ? ` show ${kind}` : ""); b.textContent = text || ""; }
+function headers() { const h = { "Content-Type": "application/json" }; const k = $("apikey").value.trim(); if (k) h["X-API-Key"] = k; return h; }
+async function api(path, body) {
+  const res = await fetch($("engine").value.replace(/\/$/, "") + path, { method: body === undefined ? "GET" : "POST", headers: headers(), body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`${res.status} ${JSON.stringify(data.detail ?? data)}`);
+  return data;
+}
+
+// -- preflight ---------------------------------------------------------------
+
+$("check").onclick = async () => {
+  const out = [];
+  $("preflight").textContent = "checking...";
+  // The engine sends CORS headers, so a normal fetch can read the body.
+  try {
+    const h = await (await fetch($("engine").value.replace(/\/$/, "") + "/api/portal/health")).json();
+    out.push(`OK    engine   ${h.enabled ? "portal enabled" : "PORTAL DISABLED"}`);
+    out.push(`      livekit_configured=${h.livekit_configured} agents=${h.active_agents}/${h.max_concurrent_agents}`);
+  } catch (e) { out.push(`FAIL  engine   ${e.message}`); }
+
+  // The sample server is a plain python http.server with no CORS headers, and
+  // these URLs are fetched by the ENGINE server-side, never by this page. So
+  // probe reachability without reading the response: an <img> that loads and a
+  // no-cors fetch that resolves both prove the port is serving.
+  const imgOk = await new Promise(res => {
+    const i = new Image();
+    i.onload = () => res(true);
+    i.onerror = () => res(false);
+    i.src = `${SAMPLES}/2.jpg?cb=${Date.now()}`;
+  });
+  out.push(`${imgOk ? "OK  " : "FAIL"}  samples  face 2.jpg`);
+  let audioOk = false;
+  try { await fetch(`${SAMPLES}/canidate_originalsample.m4a`, { mode: "no-cors" }); audioOk = true; } catch {}
+  out.push(`${audioOk ? "OK  " : "FAIL"}  samples  voice .m4a`);
+  out.push("      (engine fetches these server-side, not this page)");
+  $("preflight").textContent = out.join("\n");
+};
+
+// -- transcript / engine messages -------------------------------------------
+
+// Live captions: while the interviewer speaks, its line arrives as growing
+// transcript.partial messages (live: true, increasing seq), in step with the
+// voice. Newly added words fade in; transcript.final then settles the turn.
+let agentState = "";
+function renderTranscript() {
+  const el = $("transcript"); const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  const list = [...turns.values()].sort((a, b) => (a.turn_no ?? 1e9) - (b.turn_no ?? 1e9));
+  el.innerHTML = list.map(t => {
+    const fresh = !t.final && t.fresh ? t.fresh : "";
+    const body = fresh ? escapeHtml(t.text.slice(0, t.text.length - fresh.length)) + `<span class="fresh">${escapeHtml(fresh)}</span>` : escapeHtml(t.text);
+    const cursor = t.speaker === "ai" && !t.final && agentState === "speaking" ? `<span class="cursor">▍</span>` : "";
+    return `<div class="turn ${t.speaker} ${t.final ? "" : "partial"} ${t.live ? "live" : ""} ${t.filler ? "filler" : ""}"><div class="who">${t.speaker === "ai" ? "Interviewer" : "You"}${t.filler ? " · filler" : ""}</div>${body}${cursor}</div>`;
+  }).join("");
+  for (const t of turns.values()) t.fresh = "";   // animate each word once
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+function onPartial(msg) {
+  const prev = turns.get(msg.turn_id) || {};
+  if (prev.final) return;                                                      // a late partial never undoes a final
+  if (msg.seq != null && prev.seq != null && msg.seq <= prev.seq) return;      // out of date
+  const old = prev.text || "";
+  const fresh = msg.text.startsWith(old) ? msg.text.slice(old.length) : msg.text;
+  turns.set(msg.turn_id, { ...prev, speaker: msg.speaker, text: msg.text, final: false, seq: msg.seq ?? prev.seq,
+                           live: !!msg.live, spoken: msg.live ? msg.text : prev.spoken, fresh });
+}
+function onFinal(msg) {
+  const prev = turns.get(msg.turn_id) || {};
+  // Cut off mid-reply: show what the candidate actually heard (heard_text), not the unspoken rest.
+  const heard = msg.heard_text ?? (msg.speaker === "ai" && msg.interrupted ? prev.spoken : null);
+  const text = heard ? heard + " —" : msg.text;
+  turns.set(msg.turn_id, { speaker: msg.speaker, text, final: true, turn_no: msg.turn_no, filler: msg.filler });
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function setAgentState(state) {
+  agentState = state; $("agentState").textContent = state; $("agentDot").className = "dot " + state;
+  renderTranscript();
+}
+
+function onEngineMessage(msg) {
+  switch (msg.type) {
+    case "session.hello":
+      log(`hello: status=${msg.status} planned=${msg.planned_secs}s`);
+      send({ type: "client.ready" }, "interview.control"); break;
+    case "transcript.partial": onPartial(msg); renderTranscript(); break;
+    case "transcript.final": onFinal(msg); renderTranscript(); break;
+    case "transcript.snapshot":
+      for (const t of msg.turns) turns.set(t.turn_id, { speaker: t.speaker, text: t.text, final: true, turn_no: t.turn_no, filler: t.filler });
+      renderTranscript(); break;
+    case "agent.state": setAgentState(msg.state); break;
+    case "interview.state":
+      $("status").textContent = msg.status; activeSecs = msg.active_elapsed_secs ?? activeSecs;
+      if (msg.status === "paused") {
+        const left = msg.resume_grace_deadline_ms ? Math.max(0, Math.round((msg.resume_grace_deadline_ms - Date.now()) / 1000)) : "?";
+        banner(`Interview paused (${msg.reason}). Continue within ${left}s.`, "warn");
+        $("resume").disabled = false; $("pause").disabled = true;
+      } else if (msg.status === "in_progress") {
+        banner(""); $("resume").disabled = true; $("pause").disabled = (msg.pauses_remaining ?? 1) <= 0;
+      }
+      log(`state: ${msg.status}${msg.reason ? " (" + msg.reason + ")" : ""}`); break;
+    case "interview.ended":
+      ended = true;
+      banner(`Interview ended: ${msg.reason} — fetching proctoring report…`, "ok");
+      log(`ENDED: ${msg.reason}`);
+      setTimeout(() => room && room.disconnect(), 1500);
+      // The summaries are written during finalize(), so give the agent a moment.
+      setTimeout(fetchReport, 6000);
+      break;
+    case "error": log(`engine error: ${msg.code} ${msg.message}`); break;
+    default: log(`msg: ${JSON.stringify(msg)}`);
+  }
+}
+
+async function send(payload, topic) {
+  if (!room) return;
+  await room.localParticipant.publishData(enc.encode(JSON.stringify({ v: 1, ...payload })), { reliable: true, topic, destinationIdentities: join ? [join.agent_identity] : undefined });
+}
+function proctor(event, details = {}) { send({ type: "proctor.client_event", event, client_ts_ms: Date.now(), details }, "interview.proctor"); }
+
+// -- report ------------------------------------------------------------------
+
+function num(v, digits = 4) { return (v === null || v === undefined) ? "—" : Number(v).toFixed(digits); }
+
+function renderModality(title, m) {
+  if (!m) return "";
+  const score = m.score || {}, pres = m.presence || m.coverage || {};
+  const extra = Object.entries(pres).filter(([, v]) => v !== null && v !== undefined)
+    .map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
+  return `<div class="modality">
+    <h3>${title} <span class="tag ${m.status}">${m.status}</span></h3>
+    <table class="kv">
+      <tr><th>provider</th><td>${m.provider || "—"}${m.mode ? " · " + m.mode : ""}</td></tr>
+      <tr><th>best / mean</th><td>${num(score.best)} / ${num(score.mean)}</td></tr>
+      <tr><th>matched / scored</th><td>${score.matched_checks ?? 0} / ${score.scored_checks ?? 0}</td></tr>
+      <tr><th>threshold</th><td>${num(score.threshold, 3)}</td></tr>
+      ${extra}
+    </table></div>`;
+}
+
+async function fetchReport() {
+  if (!sessionId) { $("reportOut").textContent = "No session yet."; return; }
+  try {
+    const r = await api(`/api/portal/sessions/${sessionId}/proctoring-report`);
+    if (!r.proctoring.enabled) {
+      $("reportOut").innerHTML = `<div class="verdict review">PROCTORING OFF</div>
+        <div class="hint">This session ran with proctoring disabled — the baseline case.</div>`;
+      return;
+    }
+    const v = r.verdict || { overall: "review", reasons: [] };
+    const events = (r.events || []).map(e =>
+      `<tr><th>${e.at_seconds ?? "—"}s</th><td>${e.type} <i>(${e.severity})</i></td></tr>`).join("");
+    $("reportOut").innerHTML =
+      `<div class="verdict ${v.overall}">${v.overall.toUpperCase()}</div>` +
+      (v.reasons.length ? `<div class="hint">${v.reasons.join(", ")}</div>` : "") +
+      renderModality("Face match", r.face_match) +
+      renderModality("Voice match", r.voice_match) +
+      (events ? `<h2 style="margin-top:12px">Flags</h2><table class="kv">${events}</table>` : "") +
+      `<div class="hint">modalities: ${r.proctoring.modalities.join(", ") || "none yet"} ·
+        tick ${r.proctoring.check_interval_secs}s<br>
+        <b>inconclusive</b> means fewer than 3 scored checks — stay in the call longer.</div>`;
+    log(`report: ${v.overall} (${r.proctoring.modalities.join("+") || "no data"})`);
+  } catch (e) {
+    $("reportOut").textContent = "report failed: " + e.message;
+  }
+}
+$("report").onclick = fetchReport;
+$("autopoll").onclick = () => {
+  if (poll) { clearInterval(poll); poll = null; $("autopoll").textContent = "Auto-refresh: off"; }
+  else { poll = setInterval(fetchReport, 5000); $("autopoll").textContent = "Auto-refresh: on (5s)"; fetchReport(); }
+};
+
+// -- connect -----------------------------------------------------------------
+
+async function connect() {
+  ended = false;
+  join = await api("/api/portal/join", { candidate_join_token: $("token").value.trim(), client: { user_agent: navigator.userAgent } });
+  sessionId = join.room_name.replace(/^int_/, "");
+  $("sid").textContent = sessionId.slice(0, 18) + "…";
+  log(`join ok: room=${join.room_name} resume=${join.resume.is_resume}`);
+  $("agentName").textContent = join.policies.agent_display_name || "AI Interviewer";
+  room = new LK.Room({ adaptiveStream: true, dynacast: true, audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } });
+
+  room.on(LK.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
+    if (!participant || participant.identity !== join.agent_identity) return;
+    try { onEngineMessage(JSON.parse(dec.decode(payload))); } catch (e) { log("bad message " + e); }
+  });
+  room.on(LK.RoomEvent.TrackSubscribed, (track, pub, participant) => {
+    if (track.kind === "audio") { const el = track.attach(); el.dataset.lk = "1"; document.body.appendChild(el); log(`playing audio from ${participant.identity}`); }
+  });
+  room.on(LK.RoomEvent.ParticipantConnected, p => { if (p.identity === join.agent_identity) setAgentState("listening"); });
+  room.on(LK.RoomEvent.ParticipantDisconnected, p => { if (p.identity === join.agent_identity && !ended) { setAgentState("connecting"); banner("Interviewer reconnecting…", "warn"); } });
+  room.on(LK.RoomEvent.Reconnecting, () => { $("conn").textContent = "reconnecting"; banner("Connection unstable, reconnecting…", "warn"); });
+  room.on(LK.RoomEvent.Reconnected, () => { $("conn").textContent = "connected"; banner(""); });
+  room.on(LK.RoomEvent.AudioPlaybackStatusChanged, () => { $("startAudio").style.display = room.canPlaybackAudio ? "none" : "inline-block"; });
+  room.on(LK.RoomEvent.Disconnected, reason => {
+    $("conn").textContent = "disconnected"; clearInterval(heartbeat); log(`disconnected: ${reason}`);
+    document.querySelectorAll("audio[data-lk]").forEach(a => a.remove());
+    const duplicate = reason === LK.DisconnectReason.DUPLICATE_IDENTITY;
+    if (duplicate) banner("Interview opened in another tab.", "bad");
+    ["pause", "resume", "end", "leave"].forEach(id => $(id).disabled = true);
+    $("rejoin").disabled = ended || duplicate;
+  });
+
+  await room.connect(join.livekit_url, join.access_token);
+  $("conn").textContent = "connected";
+  await room.localParticipant.setMicrophoneEnabled(true);
+  if (join.policies.camera_required !== false) {
+    await room.localParticipant.setCameraEnabled(true);
+    const cam = room.localParticipant.getTrackPublication(LK.Track.Source.Camera);
+    if (cam && cam.track) cam.track.attach($("self"));
+    log("camera on — the face checks need it");
+  } else {
+    log("camera_required=false — no video published (voice-only preset)");
+  }
+  await room.startAudio().catch(() => {});
+  heartbeat = setInterval(() => send({ type: "client.heartbeat", visible: !document.hidden, focused: document.hasFocus(), mic_enabled: room.localParticipant.isMicrophoneEnabled, camera_enabled: room.localParticipant.isCameraEnabled }, "interview.control"), 5000);
+  ["pause", "end", "leave"].forEach(id => $(id).disabled = false);
+  $("pause").disabled = !join.policies.allow_candidate_pause || join.resume.pauses_remaining <= 0;
+  $("rejoin").disabled = true;
+}
+
+$("create").onclick = async () => {
+  try {
+    const s = await api("/api/interviews/portal/sessions", JSON.parse($("body").value));
+    $("token").value = s.candidate_join_token;
+    sessionId = s.interview_session_id;
+    $("sid").textContent = sessionId.slice(0, 18) + "…";
+    $("status").textContent = s.status;
+    log(`created ${s.interview_session_id}`);
+    $("reportOut").innerHTML = `<div class="hint">Session created. Join, stay ~40s with the
+      camera on, then End — the report appears here automatically.</div>`;
+  } catch (e) { log("create failed: " + e.message); banner("Create failed: " + e.message, "bad"); }
+};
+$("join").onclick = async () => { try { await connect(); } catch (e) { log("join failed: " + e.message); banner("Could not join: " + e.message, "bad"); } };
+$("rejoin").onclick = $("join").onclick;
+$("pause").onclick = () => send({ type: "control.pause" }, "interview.control");
+$("resume").onclick = () => send({ type: "control.resume" }, "interview.control");
+$("end").onclick = () => { if (confirm("End the interview now?")) send({ type: "control.end_request" }, "interview.control"); };
+$("leave").onclick = () => room && room.disconnect();
+$("startAudio").onclick = () => room && room.startAudio();
+
+document.addEventListener("visibilitychange", () => proctor(document.hidden ? "visibility_hidden" : "visibility_visible"));
+window.addEventListener("blur", () => proctor("window_blur"));
+window.addEventListener("focus", () => proctor("window_focus"));
+document.addEventListener("copy", () => proctor("copy"));
+document.addEventListener("paste", () => proctor("paste"));
+
+timerTick = setInterval(() => { if ($("status").textContent === "in_progress") activeSecs++; $("timer").textContent = `${Math.floor(activeSecs / 60)}:${String(activeSecs % 60).padStart(2, "0")}`; }, 1000);
+$("check").click();
+</script>
+</body>
+</html>
